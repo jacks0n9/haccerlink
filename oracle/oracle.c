@@ -216,6 +216,11 @@ int main(int argc, char **argv)
 			NEED(1);
 			ret = ticalcs_calc_send_app2(calc, a[0]);
 		}
+		else if (!strcmp(op, "sendos"))
+		{
+			NEED(1);
+			ret = ticalcs_calc_send_os2(calc, a[0]);
+		}
 		else if (!strcmp(op, "get"))
 		{
 			NEED(3);

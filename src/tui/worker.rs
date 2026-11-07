@@ -7,17 +7,33 @@ use haccerlink::dusb::dissect;
 use haccerlink::error::Error;
 use haccerlink::logging::hex_log_observer;
 use haccerlink::tifiles::{self, Piece, TiFile, VarFile};
-use haccerlink::transport::Transport;
+use haccerlink::transport::{Transport, UsbDeviceInfo};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 
 type DynCalc = Calc<Box<dyn Transport>>;
 
+/// What a send job sends: whole files, or items picked out of a bundle.
+pub enum SendWhat {
+    Files(Vec<PathBuf>),
+    Pieces(Vec<Piece>),
+}
+
+impl SendWhat {
+    pub fn describe(&self) -> String {
+        match self {
+            SendWhat::Files(f) => format!("{} file(s)", f.len()),
+            SendWhat::Pieces(p) => format!("{} item(s)", p.len()),
+        }
+    }
+}
+
 pub enum Job {
     Connect,
     Refresh,
     Info,
-    Send(Vec<PathBuf>, Option<bool>),
+    /// What to send, archive choice, whether to install an OS among it.
+    Send(SendWhat, Option<bool>, bool),
     Get(Vec<CalcVar>, PathBuf),
     Delete(Vec<CalcVar>),
     Rename(CalcVar, String),
@@ -46,6 +62,8 @@ struct Worker {
     opts: Options,
     tx: Sender<Msg>,
     calc: Option<DynCalc>,
+    /// The USB device we're connected to (None for the simulator).
+    usb: Option<UsbDeviceInfo>,
 }
 
 pub fn spawn(opts: Options, tx: Sender<Msg>, rx: Receiver<Job>) {
@@ -54,6 +72,7 @@ pub fn spawn(opts: Options, tx: Sender<Msg>, rx: Receiver<Job>) {
             opts,
             tx,
             calc: None,
+            usb: None,
         };
         while let Ok(job) = rx.recv() {
             w.handle(job);
@@ -96,7 +115,7 @@ impl Worker {
 
     fn connect(&mut self) -> Result<(), Error> {
         self.calc = None;
-        let (t, desc) = crate::open_transport(
+        let (t, desc, usb) = crate::open_transport(
             self.opts.sim,
             self.opts.device.as_deref(),
             self.opts.timeout,
@@ -120,11 +139,70 @@ impl Worker {
                 let _ = tx.send(Msg::Progress(Some((done, total))));
             }
         })));
-        calc.is_ready()?;
+        match calc.is_ready() {
+            Ok(()) => {}
+            // A CE without an OS (e.g. after an interrupted OS transfer)
+            // refuses normal mode but still takes an OS transfer: stay
+            // connected so one can be sent.
+            Err(Error::Calc(code)) => {
+                self.calc = Some(calc);
+                self.usb = usb;
+                self.send(Msg::Connected(desc, CalcInfo::default()));
+                self.send(Msg::Error(format!(
+                    "calculator refused normal mode (error {code}); it may have no OS. \
+                     To reinstall one, send an .8eu file"
+                )));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
         let info = calc.get_version()?;
         self.calc = Some(calc);
+        self.usb = usb;
         self.send(Msg::Connected(desc, info));
         self.refresh()
+    }
+
+    /// Send an OS, then follow the calculator through its restart.
+    fn install_os(&mut self, os: &tifiles::FlashFile) -> Result<(), Error> {
+        let what = tifiles::describe(&Piece::Os(os.clone()));
+        self.log(format!("installing {what}; don't unplug the calculator"));
+        self.send(Msg::Busy(Some(format!("installing {what}"))));
+        if let Err(e) = self.calc()?.send_os(os) {
+            self.send(Msg::Error(
+                "OS transfer failed. If the calculator shows the boot code's OS-transfer \
+                 screen, send the OS again"
+                    .into(),
+            ));
+            return Err(e);
+        }
+        self.log("OS sent");
+        let Some(old) = self.usb.clone() else {
+            return Ok(()); // the simulator doesn't restart
+        };
+        self.send(Msg::Busy(Some(
+            "waiting for the calculator to restart".into(),
+        )));
+        let tx = self.tx.clone();
+        let calc = self.calc.as_mut().expect("connected above");
+        let new = match crate::reconnect_after_os(calc, &old, self.opts.timeout, |s| {
+            let _ = tx.send(Msg::Log(s.to_string()));
+        }) {
+            Ok(new) => new,
+            Err(e) => {
+                // Its transport is dead; show the calculator as disconnected.
+                self.calc = None;
+                return Err(Error::Other(format!("{e:#}")));
+            }
+        };
+        // Later reconnects should find it at its new address.
+        if self.opts.device.is_some() {
+            self.opts.device = Some(format!("{}:{}", new.bus, new.address));
+        }
+        let info = self.calc()?.get_version()?;
+        self.send(Msg::Connected(new.to_string(), info));
+        self.usb = Some(new);
+        Ok(())
     }
 
     fn calc(&mut self) -> Result<&mut DynCalc, Error> {
@@ -150,7 +228,7 @@ impl Worker {
             Job::Connect => "connecting".to_string(),
             Job::Refresh => "listing variables".into(),
             Job::Info => "reading calculator info".into(),
-            Job::Send(f, _) => format!("sending {} file(s)", f.len()),
+            Job::Send(what, _, _) => format!("sending {}", what.describe()),
             Job::Get(v, _) => format!("receiving {} variable(s)", v.len()),
             Job::Delete(v) => format!("deleting {} variable(s)", v.len()),
             Job::Rename(v, n) => format!("renaming {} to {n}", v.name),
@@ -189,57 +267,71 @@ impl Worker {
                 self.send(Msg::Info(info));
                 Ok(())
             }
-            Job::Send(files, archive) => {
-                let (mut sent, mut failed, mut skipped_os) = (0, 0, 0);
+            Job::Send(what, archive, install_os) => {
+                let (mut sent, mut failed) = (0, 0);
+                let mut pieces = Vec::new();
+                let files = match what {
+                    SendWhat::Files(f) => f,
+                    SendWhat::Pieces(p) => {
+                        pieces = p;
+                        Vec::new()
+                    }
+                };
                 for path in files {
-                    let file = match TiFile::load(&path) {
-                        Ok(f) => f,
+                    match TiFile::load(&path) {
+                        Ok(file) => {
+                            let (p, warnings) = file.pieces();
+                            for w in warnings {
+                                self.log(format!("warning: {}: {w}", path.display()));
+                            }
+                            pieces.extend(p);
+                        }
                         Err(e) => {
                             self.send(Msg::Error(format!("{}: {e}", path.display())));
                             failed += 1;
-                            continue;
                         }
-                    };
-                    let (pieces, warnings) = file.pieces();
-                    for w in warnings {
-                        self.log(format!("warning: {}: {w}", path.display()));
                     }
-                    for p in &pieces {
-                        let what = tifiles::describe(p);
-                        let r = match p {
-                            Piece::Var(e) => {
-                                self.log(format!("sending {what}"));
-                                self.calc()?.send_var(e, archive)
-                            }
-                            Piece::App(f) => {
-                                self.log(format!("sending {what}"));
-                                self.calc()?.send_app(f)
-                            }
-                            Piece::Os(_) => {
-                                self.log(format!("skipping {what}: OS transfer isn't supported"));
-                                skipped_os += 1;
-                                continue;
-                            }
-                        };
-                        match r {
-                            Ok(()) => sent += 1,
-                            // The calculator said no to this one; keep going.
-                            Err(e) if !is_link_error(&e) => {
-                                self.send(Msg::Error(format!("{what}: {e}")));
-                                failed += 1;
-                            }
-                            Err(e) => return Err(e),
+                }
+                let (os, pieces) = match tifiles::split_os(pieces) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        self.send(Msg::Error(e.to_string()));
+                        return Ok(());
+                    }
+                };
+                let mut skipped_os = false;
+                if let Some(os) = os {
+                    if install_os {
+                        self.install_os(&os)?;
+                        sent += 1;
+                    } else {
+                        skipped_os = true;
+                    }
+                }
+                for p in &pieces {
+                    let what = tifiles::describe(p);
+                    self.log(format!("sending {what}"));
+                    let r = match p {
+                        Piece::Var(e) => self.calc()?.send_var(e, archive),
+                        Piece::App(f) => self.calc()?.send_app(f),
+                        Piece::Os(_) => unreachable!("split_os took it out"),
+                    };
+                    match r {
+                        Ok(()) => sent += 1,
+                        // The calculator said no to this one; keep going.
+                        Err(e) if !is_link_error(&e) => {
+                            self.send(Msg::Error(format!("{what}: {e}")));
+                            failed += 1;
                         }
+                        Err(e) => return Err(e),
                     }
                 }
                 let mut summary = format!("sent {sent}");
                 if failed > 0 {
                     summary += &format!(", {failed} failed");
                 }
-                if skipped_os > 0 {
-                    summary += &format!(
-                        ", {skipped_os} OS file(s) skipped (use TI Connect CE for OS upgrades)"
-                    );
+                if skipped_os {
+                    summary += ", OS skipped";
                 }
                 self.log(summary);
                 self.refresh()

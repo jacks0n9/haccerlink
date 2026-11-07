@@ -34,6 +34,27 @@ pub struct SimState {
     pub executed: Vec<String>,
     /// Delay the simulated OS asks for after a key press, in microseconds.
     pub key_delay_us: u32,
+    /// The last OS image received completely (header checked, all data at
+    /// the right addresses, EOT acknowledged).
+    pub installed_os: Option<Vec<u8>>,
+}
+
+/// Chunk size in the OS acks, as a real CE (boot code 5.6.1) answers it.
+pub const SIM_OS_CHUNK: u32 = 0x3EC;
+/// The real CE's OS ack: the chunk size, then four zero bytes.
+fn os_ack() -> Vec<u8> {
+    let mut v = cmd::os_ack(SIM_OS_CHUNK);
+    v.extend_from_slice(&[0; 4]);
+    v
+}
+/// The real CE's Acknowledgement of EOT after an OS transfer.
+const OS_EOT_ACK: [u8; 5] = [0x01, 0x00, 0x00, 0x00, 0x14];
+
+/// An OS transfer in progress.
+struct OsTransfer {
+    size: usize,
+    header: Option<Vec<u8>>,
+    data: Vec<u8>,
 }
 
 const RAM_USER: u64 = 154_000;
@@ -110,6 +131,7 @@ impl Default for SimState {
             keys: Vec::new(),
             executed: Vec::new(),
             key_delay_us: 10_000,
+            installed_os: None,
         }
     }
 }
@@ -281,6 +303,7 @@ pub struct Simulator<T: Transport> {
     link: Link<T>,
     pub state: Arc<Mutex<SimState>>,
     pending_rts: Option<cmd::Rts>,
+    os: Option<OsTransfer>,
 }
 
 impl<T: Transport> Simulator<T> {
@@ -289,6 +312,7 @@ impl<T: Transport> Simulator<T> {
             link: Link::new(transport, Role::Device),
             state,
             pending_rts: None,
+            os: None,
         }
     }
 
@@ -318,9 +342,12 @@ impl<T: Transport> Simulator<T> {
     pub fn step(&mut self) -> Result<()> {
         let pkt = self.link.recv_vpkt()?;
         match pkt.kind {
-            VPKT_PING => self
-                .link
-                .send_vpkt(VPKT_MODE_SET, &[0x00, 0x00, 0x07, 0xD0]),
+            // The CE echoes the mode's timeout (07D0 normally, 0FA0 for OS
+            // transfers).
+            VPKT_PING => {
+                let timeout = pkt.data.get(6..10).unwrap_or(&[0, 0, 0x07, 0xD0]).to_vec();
+                self.link.send_vpkt(VPKT_MODE_SET, &timeout)
+            }
             VPKT_PARM_REQ => {
                 let pids = cmd::parse_param_request(&pkt.data)?;
                 let st = self.state.lock().unwrap();
@@ -405,6 +432,57 @@ impl<T: Transport> Simulator<T> {
                 }
                 drop(st);
                 self.data_ack()
+            }
+            VPKT_OS_BEGIN => {
+                let size = cmd::parse_os_begin(&pkt.data)? as usize;
+                self.os = Some(OsTransfer {
+                    size,
+                    header: None,
+                    data: Vec::with_capacity(size),
+                });
+                self.link.send_vpkt(VPKT_OS_ACK, &os_ack())
+            }
+            VPKT_OS_HEADER => match &mut self.os {
+                Some(t) if t.header.is_none() => {
+                    t.header = Some(pkt.data);
+                    // The real CE asks for 15 ms while it checks the header.
+                    self.link
+                        .send_vpkt(VPKT_DELAY_ACK, &15_000u32.to_be_bytes())?;
+                    self.link.send_vpkt(VPKT_OS_ACK, &os_ack())
+                }
+                _ => self.reply_error(0x000C),
+            },
+            VPKT_OS_DATA => {
+                let (addr, bytes) = cmd::parse_os_data_834pce(&pkt.data)?;
+                let ok = match &mut self.os {
+                    Some(t)
+                        if t.header.is_some()
+                            && addr == cmd::CE_OS_BASE_ADDR + t.data.len() as u32
+                            && t.data.len() + bytes.len() <= t.size =>
+                    {
+                        t.data.extend_from_slice(bytes);
+                        true
+                    }
+                    _ => false,
+                };
+                if ok {
+                    self.data_ack()
+                } else {
+                    self.os = None;
+                    self.reply_error(0x000C)
+                }
+            }
+            VPKT_EOT if self.os.is_some() => {
+                let t = self.os.take().unwrap();
+                let header = t.header.unwrap_or_default();
+                if t.data.len() != t.size || !t.data.starts_with(&header) {
+                    return self.reply_error(0x000C);
+                }
+                self.state.lock().unwrap().installed_os = Some(t.data);
+                // ...and 80 ms before acknowledging the end of the OS.
+                self.link
+                    .send_vpkt(VPKT_DELAY_ACK, &80_000u32.to_be_bytes())?;
+                self.link.send_vpkt(VPKT_EOT_ACK, &OS_EOT_ACK)
             }
             VPKT_EOT => Ok(()),
             VPKT_VAR_REQ => {

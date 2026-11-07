@@ -92,6 +92,34 @@ fn write_fixtures(dir: &Path) {
     let mut f = FlashFile::from_received("HELLO", types::APP, app);
     f.revision_major = 1;
     std::fs::write(dir.join("HELLO.8ek"), f.to_bytes()).unwrap();
+    // A non-ASCII app name, like TI's Español app ("Espa" B5 "ol").
+    let mut app = vec![0x81, 0x0F, 0x00, 0x00, 0x01, 0x00, 0x81, 0x47];
+    app.extend_from_slice(b"Espa\xB5ol");
+    app.resize(0x100 + 6, 0x5A);
+    let f = FlashFile::from_received("x", types::APP, app);
+    std::fs::write(dir.join("ESPANOL.8ek"), f.to_bytes()).unwrap();
+    let chunk = (sim::SIM_OS_CHUNK - 4) as usize;
+    // Three full OS Data chunks and a partial one...
+    std::fs::write(dir.join("OS.8eu"), fake_os(3 * chunk + 100).to_bytes()).unwrap();
+    // ...and exactly three, after which libticalcs sends an empty chunk.
+    std::fs::write(dir.join("OSEXACT.8eu"), fake_os(3 * chunk).to_bytes()).unwrap();
+}
+
+/// A stand-in OS image laid out like TI's: 0x80 0x0F header fields up to
+/// the first FF FF FF FF, then the code.
+fn fake_os(len: usize) -> FlashFile {
+    let mut d = vec![0x80, 0x0F, 0x00, 0x00, 0x01, 0x00];
+    d.extend((0..250u32).map(|i| (i * 7 % 251) as u8));
+    d.extend_from_slice(&[0xFF; 4]);
+    d.extend((0..).map(|i: u32| (i * 13 % 256) as u8).take(len - d.len()));
+    let mut f = FlashFile::from_received("basecode", types::OS, d);
+    f.revision_major = 5;
+    f.revision_minor = 8;
+    f
+}
+
+fn load_flash(dir: &Path, f: &str) -> FlashFile {
+    FlashFile::parse(&std::fs::read(dir.join(f)).unwrap()).unwrap()
 }
 
 struct Case {
@@ -214,6 +242,24 @@ const CASES: &[Case] = &[
             let f = FlashFile::parse(&std::fs::read(d.join("HELLO.8ek")).unwrap()).unwrap();
             c.send_app(&f).unwrap()
         },
+        output: None,
+    },
+    Case {
+        name: "send_app_accented",
+        oracle: &["sendapp", "$/ESPANOL.8ek"],
+        run: |c, d| c.send_app(&load_flash(d, "ESPANOL.8ek")).unwrap(),
+        output: None,
+    },
+    Case {
+        name: "send_os",
+        oracle: &["sendos", "$/OS.8eu"],
+        run: |c, d| c.send_os(&load_flash(d, "OS.8eu")).unwrap(),
+        output: None,
+    },
+    Case {
+        name: "send_os_exact",
+        oracle: &["sendos", "$/OSEXACT.8eu"],
+        run: |c, d| c.send_os(&load_flash(d, "OSEXACT.8eu")).unwrap(),
         output: None,
     },
     Case {
@@ -372,6 +418,9 @@ const DISSECT_CASES: &[&str] = &[
     "send_exact",
     "send_list",
     "send_app",
+    "send_app_accented",
+    "send_os",
+    "send_os_exact",
     "get_program",
     "get_matrix",
     "get_app",
@@ -481,6 +530,43 @@ fn matches_libticalcs_goldens() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The simulator ends up with exactly the OS image that was sent.
+#[test]
+fn os_reaches_simulator() {
+    let chunk = (sim::SIM_OS_CHUNK - 4) as usize;
+    for len in [300, chunk, 3 * chunk, 3 * chunk + 7] {
+        let os = fake_os(len);
+        let state = Arc::new(Mutex::new(SimState::default()));
+        let mut calc = Calc::new(sim::spawn(state.clone()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        calc.link()
+            .set_progress(Some(Box::new(move |d, t| s2.lock().unwrap().push((d, t)))));
+        calc.is_ready().unwrap();
+        calc.send_os(&os).unwrap();
+        assert_eq!(state.lock().unwrap().installed_os.as_ref(), Some(&os.data));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first(), Some(&(0, len)));
+        assert_eq!(seen.last(), Some(&(len, len)));
+        // The link's per-packet progress is restored afterwards.
+        drop(seen);
+        calc.list().unwrap();
+    }
+}
+
+#[test]
+fn send_os_rejects_bad_images() {
+    let calc = || Calc::new(sim::spawn(Arc::new(Mutex::new(SimState::default()))));
+    let mut no_marker = fake_os(600);
+    no_marker.data.retain(|&b| b != 0xFF);
+    assert!(calc().send_os(&no_marker).is_err());
+    let mut other_hw = fake_os(600);
+    other_hw.hw_id = 0x0A;
+    assert!(calc().send_os(&other_hw).is_err());
+    let app = FlashFile::from_received("X", types::APP, vec![0x81, 0x0F]);
+    assert!(calc().send_os(&app).is_err());
 }
 
 /// Re-record goldens with the real libticalcs2. Needs `oracle/build/oracle`.

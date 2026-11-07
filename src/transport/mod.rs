@@ -10,7 +10,7 @@ mod usb;
 
 pub use channel::{ChannelTransport, channel_pair};
 pub use stdio::StdioTransport;
-pub use usb::{UsbDeviceInfo, UsbTransport, list_calculators};
+pub use usb::{UsbDeviceInfo, UsbTransport, list_calculators, wait_for_restart};
 
 use crate::error::Result;
 use std::time::Duration;

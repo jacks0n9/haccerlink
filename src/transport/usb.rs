@@ -62,6 +62,53 @@ pub fn list_calculators() -> Result<Vec<UsbDeviceInfo>> {
         .collect())
 }
 
+/// After an OS install: wait for the calculator at `old` to drop off USB
+/// (it restarts once the OS is validated), then for a calculator to show up
+/// on the same bus that wasn't there before. Returns the new device.
+pub fn wait_for_restart(
+    old: &UsbDeviceInfo,
+    gone_within: Duration,
+    back_within: Duration,
+) -> Result<UsbDeviceInfo> {
+    use std::time::Instant;
+    let same = |d: &UsbDeviceInfo, bus: &str, addr: u8| d.bus == bus && d.address == addr;
+    let others: Vec<(String, u8)> = list_calculators()?
+        .into_iter()
+        .filter(|d| !same(d, &old.bus, old.address))
+        .map(|d| (d.bus, d.address))
+        .collect();
+    let poll = Duration::from_millis(250);
+
+    let start = Instant::now();
+    while list_calculators()?
+        .iter()
+        .any(|d| same(d, &old.bus, old.address))
+    {
+        if start.elapsed() > gone_within {
+            return Err(Error::Usb(
+                "the calculator didn't restart after the OS transfer; check its screen".into(),
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+
+    let start = Instant::now();
+    loop {
+        let found = list_calculators()?
+            .into_iter()
+            .find(|d| d.bus == old.bus && !others.iter().any(|(b, a)| same(d, b, *a)));
+        if let Some(d) = found {
+            return Ok(d);
+        }
+        if start.elapsed() > back_within {
+            return Err(Error::Usb(
+                "the calculator didn't come back on USB after restarting".into(),
+            ));
+        }
+        std::thread::sleep(poll);
+    }
+}
+
 pub struct UsbTransport {
     out_ep: nusb::Endpoint<Bulk, Out>,
     in_ep: nusb::Endpoint<Bulk, In>,

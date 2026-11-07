@@ -1,6 +1,7 @@
 use super::{App, Confirm, LogKind, Mode, Pane};
 use haccerlink::calc::Screenshot;
 use haccerlink::names;
+use haccerlink::tifiles::Piece;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -41,18 +42,32 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match &app.mode {
         Mode::Normal => {}
         Mode::Confirm(c) => {
-            let text = match c {
+            let yes_no = |t: String| (t + "\n\n[y] yes   [n] no", "Confirm", 50, 9);
+            let (text, title, w, h) = match c {
                 Confirm::Delete(v) => {
                     let names: Vec<_> = v.iter().map(|v| v.name.as_str()).collect();
-                    format!(
+                    yes_no(format!(
                         "Delete {} from the calculator?\n\n{}",
                         plural(v.len(), "variable"),
                         names.join(", ")
-                    )
+                    ))
                 }
-                Confirm::SyncClock => "Set the calculator's clock to this computer's time?".into(),
+                Confirm::SyncClock => {
+                    yes_no("Set the calculator's clock to this computer's time?".into())
+                }
+                Confirm::InstallOs(_, _, os) => (
+                    format!(
+                        "Install {os}?\n\nThis replaces the calculator's OS and clears its RAM. \
+                         It restarts when done; anything else selected is sent after that. \
+                         Don't unplug it during the transfer.\n\n\
+                         [y] install   [s] skip the OS, send the rest   [n] cancel"
+                    ),
+                    "Install OS",
+                    60,
+                    13,
+                ),
             };
-            popup(f, "Confirm", &format!("{text}\n\n[y] yes   [n] no"), 50, 9);
+            popup(f, title, &text, w, h);
         }
         Mode::Rename { var, input } => {
             popup(
@@ -66,6 +81,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 8,
             );
         }
+        Mode::Bundle(_) => draw_bundle(f, app),
         Mode::Screen | Mode::Remote => draw_screen_popup(f, app),
         Mode::Info => {
             let text = app.info.as_ref().map_or_else(
@@ -90,6 +106,80 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// The bundle picker: everything in the bundle, marked items get sent.
+fn draw_bundle(f: &mut Frame, app: &mut App) {
+    let Mode::Bundle(p) = &mut app.mode else {
+        return;
+    };
+    let full = f.area();
+    let area = centered(
+        full,
+        full.width.saturating_sub(4).min(96),
+        (p.items.len() as u16 + 5).clamp(8, full.height.saturating_sub(2)),
+    );
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(format!(
+            " {} · {} of {} marked ",
+            p.name,
+            p.marked.len(),
+            p.items.len()
+        ))
+        .title_bottom(
+            " Space mark · a all/none · A all but OS · Enter/s send · S to archive · Esc close ",
+        )
+        .border_style(Style::new().fg(ACCENT));
+    let header =
+        Row::new(["", "Name", "Type", "Size", "", "From"]).style(Style::new().dim().bold());
+    let rows = p.items.iter().enumerate().map(|(i, (member, piece))| {
+        let marked = p.marked.contains(&i);
+        let (name, kind, size, note) = match piece {
+            Piece::Var(e) => (
+                e.wire_name(),
+                names::type_name(e.type_id).to_string(),
+                e.data.len(),
+                if e.archived { "archive" } else { "" },
+            ),
+            Piece::App(a) => (a.name.clone(), "APP".into(), a.data.len(), ""),
+            Piece::Os(o) => (
+                format!("OS {}.{}", o.revision_major, o.revision_minor),
+                "OS".into(),
+                o.data.len(),
+                "replaces the OS",
+            ),
+        };
+        let style = match (marked, piece) {
+            (true, _) => Style::new().fg(SELECTED).bold(),
+            (false, Piece::Os(_)) => Style::new().fg(Color::Red),
+            _ => Style::new(),
+        };
+        Row::new(vec![
+            Cell::from(if marked { "●" } else { " " }),
+            Cell::from(name),
+            Cell::from(kind),
+            Cell::from(human(size as u64)),
+            Cell::from(note),
+            Cell::from(member.clone().unwrap_or_default()),
+        ])
+        .style(style)
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Length(7),
+            Constraint::Length(15),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header)
+    .block(block)
+    .row_highlight_style(highlight(true));
+    f.render_stateful_widget(table, area, &mut p.state);
+}
+
 fn plural(n: usize, what: &str) -> String {
     if n == 1 {
         format!("1 {what}")
@@ -104,7 +194,8 @@ Space         mark / unmark          PgUp PgDn Home End
 
 Left pane (computer)
   Enter       open folder / send file to calculator
-  s           send marked (or current) files
+              (on a bundle: choose what to send from it)
+  s           send marked (or current) files, bundles whole
   S           send to archive
   Backspace   parent folder          .   show all files
 
@@ -361,7 +452,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     }
     let keys = match app.focus {
         Pane::Local => {
-            "Enter send/open · s send · S send to archive · Space mark · Tab calc · p screen · ? help · q quit"
+            "Enter send/open (bundles: pick items) · s send · S to archive · Space mark · Tab calc · ? help"
         }
         Pane::Calc => {
             "Enter/g receive · d delete · a archive · r rename · Space mark · Tab files · p screen · ? help"

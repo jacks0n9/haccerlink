@@ -96,6 +96,11 @@ pub struct ModeSet(pub u16, pub u16, pub u16, pub u16, pub u16);
 pub const MODE_STARTUP: ModeSet = ModeSet(1, 1, 0, 0, 0x07d0);
 pub const MODE_BASIC: ModeSet = ModeSet(2, 1, 0, 0, 0x07d0);
 pub const MODE_NORMAL: ModeSet = ModeSet(3, 1, 0, 0, 0x07d0);
+/// What `send_os_834pce` sets before an OS transfer: BASIC, but with a
+/// 0x0FA0 timeout instead of 0x07D0.
+pub const MODE_OS_TRANSFER: ModeSet = ModeSet(2, 1, 0, 0, 0x0fa0);
+/// Where `send_os_834pce` puts the first byte of the OS in OS Data packets.
+pub const CE_OS_BASE_ADDR: u32 = 0x30000;
 
 /// An attribute as sent by the host (id + raw bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +161,12 @@ pub fn os_data_834pce(addr: u32, data: &[u8]) -> Vec<u8> {
     let mut v = addr.to_le_bytes().to_vec();
     v.extend_from_slice(data);
     v
+}
+
+/// Acknowledgement of OS Transfer: the chunk size the calculator wants,
+/// counting the 4-byte address of each OS Data packet.
+pub fn os_ack(chunk: u32) -> Vec<u8> {
+    chunk.to_be_bytes().to_vec()
 }
 
 pub fn param_request(pids: &[u16]) -> Vec<u8> {
@@ -425,6 +436,25 @@ pub fn parse_param_request(data: &[u8]) -> Result<Vec<u16>> {
     (0..n).map(|_| r.u16()).collect()
 }
 
+/// Begin OS Transfer: 7 unused bytes, then the OS size.
+pub fn parse_os_begin(data: &[u8]) -> Result<u32> {
+    let mut r = Reader::new(data);
+    r.take(7)?;
+    r.u32()
+}
+
+/// Acknowledgement of OS Transfer, as `dusb_cmd_r_os_ack` reads it.
+pub fn parse_os_ack(data: &[u8]) -> Result<u32> {
+    Reader::new(data).u32()
+}
+
+/// OS Data on the CE: little-endian address, then the bytes.
+pub fn parse_os_data_834pce(data: &[u8]) -> Result<(u32, &[u8])> {
+    let mut r = Reader::new(data);
+    let a = r.take(4)?;
+    Ok((u32::from_le_bytes(a.try_into().unwrap()), r.rest()))
+}
+
 pub fn parse_dirlist_request(data: &[u8]) -> Result<Vec<u16>> {
     let mut r = Reader::new(data);
     let n = r.u32()? as usize;
@@ -613,6 +643,28 @@ mod tests {
             mode_set(MODE_NORMAL),
             [0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x07, 0xD0]
         );
+    }
+
+    #[test]
+    fn os_packets_match_libticalcs() {
+        assert_eq!(
+            mode_set(MODE_OS_TRANSFER),
+            [0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x0F, 0xA0]
+        );
+        // dusb_cmd_s_os_begin: data[7..11] = size, big endian.
+        assert_eq!(
+            os_begin(0x0009_D9BE),
+            [0, 0, 0, 0, 0, 0, 0, 0x00, 0x09, 0xD9, 0xBE]
+        );
+        assert_eq!(parse_os_begin(&os_begin(1234)).unwrap(), 1234);
+        // dusb_cmd_s_os_data_834pce: address little endian.
+        let d = os_data_834pce(0x0003_03FC, &[0xAA, 0xBB]);
+        assert_eq!(d, [0xFC, 0x03, 0x03, 0x00, 0xAA, 0xBB]);
+        assert_eq!(
+            parse_os_data_834pce(&d).unwrap(),
+            (0x0003_03FC, &[0xAA, 0xBB][..])
+        );
+        assert_eq!(parse_os_ack(&os_ack(0x400)).unwrap(), 0x400);
     }
 
     #[test]

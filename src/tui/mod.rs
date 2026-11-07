@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
-use worker::{Job, Msg};
+use worker::{Job, Msg, SendWhat};
 
 #[derive(Clone)]
 pub struct Options {
@@ -47,11 +47,23 @@ enum LogKind {
 enum Confirm {
     Delete(Vec<CalcVar>),
     SyncClock,
+    /// What to send, archive choice, and a description of the OS among it.
+    InstallOs(SendWhat, Option<bool>, String),
+}
+
+/// The contents of a bundle, to pick what to send.
+struct BundlePicker {
+    name: String,
+    /// Each piece with the bundle member it came from.
+    items: Vec<(Option<String>, Piece)>,
+    marked: BTreeSet<usize>,
+    state: TableState,
 }
 
 enum Mode {
     Normal,
     Confirm(Confirm),
+    Bundle(BundlePicker),
     Rename { var: CalcVar, input: String },
     Screen,
     Remote,
@@ -237,7 +249,7 @@ impl App {
                     let vars = pieces.len() - os - apps;
                     let mut t = format!("bundle: {vars} vars, {apps} apps");
                     if os > 0 {
-                        t += &format!(", {os} OS (won't be sent)");
+                        t += &format!(", {os} OS (asks before installing)");
                     }
                     if b.checksum_ok == Some(false) {
                         t += ", BAD CHECKSUM";
@@ -390,7 +402,115 @@ impl App {
             return;
         }
         self.local_sel.clear();
-        self.job(Job::Send(files, archive));
+        // Installing an OS replaces what's on the calculator: ask first.
+        let os = files.iter().find_map(|f| {
+            let (pieces, _) = TiFile::load(f).ok()?.pieces();
+            let os = pieces.into_iter().find(|p| matches!(p, Piece::Os(_)))?;
+            Some(format!(
+                "{} from {}",
+                tifiles::describe(&os),
+                f.file_name()?.to_string_lossy()
+            ))
+        });
+        self.send_or_confirm(SendWhat::Files(files), archive, os);
+    }
+
+    fn send_or_confirm(&mut self, what: SendWhat, archive: Option<bool>, os: Option<String>) {
+        match os {
+            Some(os) => self.mode = Mode::Confirm(Confirm::InstallOs(what, archive, os)),
+            None => self.job(Job::Send(what, archive, false)),
+        }
+    }
+
+    /// Enter on a file: bundles open the picker, anything else is sent.
+    fn open_or_send(&mut self, path: PathBuf) {
+        let file = match TiFile::load(&path) {
+            Ok(f @ TiFile::Bundle(_)) => f,
+            Ok(_) => return self.send_files(None),
+            Err(e) => {
+                self.push_log(LogKind::Error, format!("{}: {e}", path.display()));
+                return;
+            }
+        };
+        let (items, warnings) = file.labeled_pieces();
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        for w in warnings {
+            self.push_log(LogKind::Error, format!("{name}: {w}"));
+        }
+        let mut state = TableState::default();
+        state.select(Some(0));
+        self.mode = Mode::Bundle(BundlePicker {
+            name,
+            items,
+            marked: BTreeSet::new(),
+            state,
+        });
+    }
+
+    fn on_key_bundle(&mut self, mut p: BundlePicker, k: KeyEvent) {
+        let len = p.items.len();
+        let cur = p.state.selected().unwrap_or(0);
+        let go = |p: &mut BundlePicker, d: isize| {
+            if len > 0 {
+                let to = (cur as isize).saturating_add(d).clamp(0, len as isize - 1);
+                p.state.select(Some(to as usize));
+            }
+        };
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => return,
+            KeyCode::Up | KeyCode::Char('k') => go(&mut p, -1),
+            KeyCode::Down | KeyCode::Char('j') => go(&mut p, 1),
+            KeyCode::PageUp => go(&mut p, -15),
+            KeyCode::PageDown => go(&mut p, 15),
+            KeyCode::Home => go(&mut p, isize::MIN / 2),
+            KeyCode::End => go(&mut p, isize::MAX / 2),
+            KeyCode::Char(' ') => {
+                if !p.marked.remove(&cur) {
+                    p.marked.insert(cur);
+                }
+                go(&mut p, 1);
+            }
+            // a: everything, or nothing if everything is already marked.
+            KeyCode::Char('a') => {
+                if p.marked.len() == len {
+                    p.marked.clear();
+                } else {
+                    p.marked = (0..len).collect();
+                }
+            }
+            // A: everything except the OS.
+            KeyCode::Char('A') => {
+                p.marked = (0..len)
+                    .filter(|&i| !matches!(p.items[i].1, Piece::Os(_)))
+                    .collect();
+            }
+            KeyCode::Enter | KeyCode::Char('s') | KeyCode::Char('S') => {
+                let archive = (k.code == KeyCode::Char('S')).then_some(true);
+                let picked: Vec<usize> = if p.marked.is_empty() {
+                    p.state.selected().into_iter().collect()
+                } else {
+                    p.marked.iter().copied().collect()
+                };
+                let pieces: Vec<Piece> = picked
+                    .into_iter()
+                    .filter_map(|i| p.items.get(i).map(|(_, piece)| piece.clone()))
+                    .collect();
+                if pieces.is_empty() {
+                    self.mode = Mode::Bundle(p);
+                    return;
+                }
+                let os = pieces
+                    .iter()
+                    .find(|x| matches!(x, Piece::Os(_)))
+                    .map(|x| format!("{} from {}", tifiles::describe(x), p.name));
+                return self.send_or_confirm(SendWhat::Pieces(pieces), archive, os);
+            }
+            _ => {}
+        }
+        self.mode = Mode::Bundle(p);
     }
 
     fn get_vars(&mut self) {
@@ -409,6 +529,7 @@ impl App {
         }
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Normal => self.on_key_normal(k),
+            Mode::Bundle(p) => self.on_key_bundle(p, k),
             Mode::Confirm(c) => match k.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => match c {
                     Confirm::Delete(v) => {
@@ -416,7 +537,15 @@ impl App {
                         self.job(Job::Delete(v));
                     }
                     Confirm::SyncClock => self.job(Job::SyncClock),
+                    Confirm::InstallOs(what, archive, _) => {
+                        self.job(Job::Send(what, archive, true))
+                    }
                 },
+                KeyCode::Char('s') if matches!(c, Confirm::InstallOs(..)) => {
+                    if let Confirm::InstallOs(what, archive, _) = c {
+                        self.job(Job::Send(what, archive, false));
+                    }
+                }
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => self.mode = Mode::Confirm(c),
             },
@@ -531,6 +660,7 @@ impl App {
                             self.local_sel.clear();
                             self.reload_local();
                         }
+                        Some(e) if self.local_sel.is_empty() => self.open_or_send(e.path),
                         Some(_) => self.send_files(None),
                         None => {}
                     }

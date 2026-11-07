@@ -205,6 +205,11 @@ impl<T: Transport> Calc<T> {
         &mut self.link
     }
 
+    /// See [`Link::replace_transport`]. Call `is_ready` afterwards.
+    pub fn replace_transport(&mut self, transport: T) -> T {
+        self.link.replace_transport(transport)
+    }
+
     /// `is_ready`: buffer size negotiation, then set mode NORMAL.
     pub fn is_ready(&mut self) -> Result<()> {
         self.link.negotiate_buffer(DEFAULT_BUF_SIZE)?;
@@ -386,7 +391,7 @@ impl<T: Transport> Calc<T> {
     pub fn send_app(&mut self, app: &FlashFile) -> Result<()> {
         if app.data_type != types::APP {
             return Err(Error::Other(
-                "sending OS files is not supported (use TI Connect CE for OS upgrades)".into(),
+                "not an app (OS files go through send_os)".into(),
             ));
         }
         let attrs = [
@@ -402,6 +407,94 @@ impl<T: Transport> Calc<T> {
         self.link.send_vpkt(VPKT_VAR_CNTS, &app.data)?;
         self.link.expect(VPKT_DATA_ACK)?;
         self.link.send_vpkt(VPKT_EOT, &[])?;
+        Ok(())
+    }
+
+    /// `send_os_834pce`: install a new OS. The calculator erases its current
+    /// OS first, so an interrupted transfer leaves it in the boot code's
+    /// "waiting for OS" screen until an OS is sent again. After the final
+    /// acknowledgement the calculator validates the OS and restarts, which
+    /// drops the USB connection.
+    ///
+    /// Reports progress as (bytes sent, OS size) through the link's progress
+    /// callback.
+    pub fn send_os(&mut self, os: &FlashFile) -> Result<()> {
+        if os.data_type != types::OS {
+            return Err(Error::Other("not an OS file".into()));
+        }
+        if os.hw_id != crate::tifiles::PRODUCT_ID_TI84PCE {
+            return Err(Error::Other(format!(
+                "OS is for hardware id {:02X}, not the TI-84 Plus CE ({:02X})",
+                os.hw_id,
+                crate::tifiles::PRODUCT_ID_TI84PCE
+            )));
+        }
+        let data = &os.data;
+        // libticalcs scans without a bound; refuse instead.
+        let hdr_len = os.os_header_len().ok_or_else(|| {
+            Error::Other("OS image has no end-of-header marker (FF FF FF FF)".into())
+        })?;
+
+        // Flash erases and the final validation make the calculator slow to
+        // answer; give it more than the usual timeout. Timing isn't part of
+        // what libticalcs puts on the wire.
+        let old_timeout = self.link.timeout();
+        self.link
+            .set_timeout(old_timeout.max(Duration::from_secs(60)));
+        let mut progress = self.link.take_progress();
+        let r = self.send_os_inner(data, hdr_len, &mut progress);
+        self.link.set_progress(progress);
+        self.link.set_timeout(old_timeout);
+        r
+    }
+
+    fn send_os_inner(
+        &mut self,
+        data: &[u8],
+        hdr_len: usize,
+        progress: &mut Option<Box<dyn FnMut(usize, usize) + Send>>,
+    ) -> Result<()> {
+        let mut report = |done: usize| {
+            if let Some(p) = progress {
+                p(done, data.len());
+            }
+        };
+        report(0);
+        // dusb_cmd_s_mode_set: buffer size negotiation, then the mode.
+        self.link.negotiate_buffer(DEFAULT_BUF_SIZE)?;
+        self.link
+            .send_vpkt(VPKT_PING, &cmd::mode_set(cmd::MODE_OS_TRANSFER))?;
+        self.link.expect(VPKT_MODE_SET)?;
+
+        self.link
+            .send_vpkt(VPKT_OS_BEGIN, &cmd::os_begin(data.len() as u32))?;
+        // libticalcs reads a chunk size from both acks; only the second is used.
+        cmd::parse_os_ack(&self.link.expect(VPKT_OS_ACK)?.data)?;
+
+        self.link.send_vpkt(VPKT_OS_HEADER, &data[..hdr_len])?;
+        let pkt_size = cmd::parse_os_ack(&self.link.expect(VPKT_OS_ACK)?.data)?;
+        let chunk = pkt_size.checked_sub(4).filter(|&c| c > 0).ok_or_else(|| {
+            Error::InvalidPacket(format!(
+                "calculator asked for OS chunks of {pkt_size} bytes"
+            ))
+        })? as usize;
+
+        // Full chunks, then the remainder, which libticalcs sends even when
+        // it's empty (an OS Data packet holding just the address).
+        let q = data.len() / chunk;
+        for i in 0..=q {
+            let start = i * chunk;
+            let end = (start + chunk).min(data.len());
+            let addr = cmd::CE_OS_BASE_ADDR + start as u32;
+            self.link
+                .send_vpkt(VPKT_OS_DATA, &cmd::os_data_834pce(addr, &data[start..end]))?;
+            self.link.expect(VPKT_DATA_ACK)?;
+            report(end);
+        }
+
+        self.link.send_vpkt(VPKT_EOT, &[])?;
+        std::thread::sleep(Duration::from_millis(500));
+        self.link.expect(VPKT_EOT_ACK)?;
         Ok(())
     }
 

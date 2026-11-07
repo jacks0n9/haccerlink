@@ -85,6 +85,17 @@ impl<T: Transport> Link<T> {
         self.progress = f;
     }
 
+    /// Continue on a new transport (the calculator re-enumerated), keeping
+    /// observers and the progress callback. Returns the old transport.
+    pub fn replace_transport(&mut self, transport: T) -> T {
+        self.max_raw = 250;
+        std::mem::replace(&mut self.transport, transport)
+    }
+
+    pub fn take_progress(&mut self) -> Option<Box<dyn FnMut(usize, usize) + Send>> {
+        self.progress.take()
+    }
+
     pub fn set_device_alloc(&mut self, size: u32) {
         self.device_alloc = size;
     }

@@ -213,7 +213,16 @@ fn native_app_name(data: &[u8]) -> Option<Vec<u8>> {
     Some(n.iter().copied().take(8).take_while(|&b| b != 0).collect())
 }
 
+/// libtifiles: 4 MB of flash minus the boot code sector.
+pub const MAX_FLASH_DATA: usize = 4 * 1024 * 1024 - 16384;
+
 impl FlashFile {
+    /// Length of an OS image's header/signature: everything before the first
+    /// four 0xFF bytes. `send_os_834pce` sends this part as the OS Header.
+    pub fn os_header_len(&self) -> Option<usize> {
+        self.data.windows(4).position(|w| w == [0xFF; 4])
+    }
+
     pub fn parse(d: &[u8]) -> Result<Self> {
         if d.len() < 78 || &d[..8] != FLASH_SIGNATURE {
             return Err(Error::InvalidFile(
@@ -248,6 +257,17 @@ impl FlashFile {
         if data_type == names::types::APP && data.first() != Some(&0x81) {
             return Err(Error::InvalidFile(
                 "app data does not start with 0x81".into(),
+            ));
+        }
+        // Both checks are libtifiles' (ti8x_file_read_flash).
+        if data_type == names::types::OS && data.first() != Some(&0x80) {
+            return Err(Error::InvalidFile(
+                "OS data does not start with 0x80".into(),
+            ));
+        }
+        if data.len() > MAX_FLASH_DATA {
+            return Err(Error::InvalidFile(
+                "flash data is larger than the CE's flash".into(),
             ));
         }
         // Like libtifiles, prefer the name from the app's own header, then
@@ -352,7 +372,7 @@ pub struct Bundle {
 pub enum Piece {
     Var(VarEntry),
     App(FlashFile),
-    /// OS upgrades aren't supported; listed so callers can say so.
+    /// An OS upgrade. Callers send these only when asked to (see `Calc::send_os`).
     Os(FlashFile),
 }
 
@@ -451,13 +471,26 @@ impl TiFile {
 
     /// Everything to send, in order, plus warnings worth showing the user.
     pub fn pieces(&self) -> (Vec<Piece>, Vec<String>) {
+        let (pieces, warnings) = self.labeled_pieces();
+        (pieces.into_iter().map(|(_, p)| p).collect(), warnings)
+    }
+
+    /// Like [`pieces`](Self::pieces), with the bundle member each piece came
+    /// from (`None` outside bundles).
+    pub fn labeled_pieces(&self) -> (Vec<(Option<String>, Piece)>, Vec<String>) {
         let mut pieces = Vec::new();
         let mut warnings = Vec::new();
         self.collect(&mut pieces, &mut warnings, None);
         (pieces, warnings)
     }
 
-    fn collect(&self, pieces: &mut Vec<Piece>, warnings: &mut Vec<String>, member: Option<&str>) {
+    fn collect(
+        &self,
+        pieces: &mut Vec<(Option<String>, Piece)>,
+        warnings: &mut Vec<String>,
+        member: Option<&str>,
+    ) {
+        let tag = || member.map(str::to_string);
         let label = |what: &str| match member {
             Some(m) => format!("{m}: {what}"),
             None => what.to_string(),
@@ -467,12 +500,12 @@ impl TiFile {
                 if !v.checksum_ok {
                     warnings.push(label("bad checksum (sending anyway)"));
                 }
-                pieces.extend(v.entries.iter().cloned().map(Piece::Var));
+                pieces.extend(v.entries.iter().cloned().map(|e| (tag(), Piece::Var(e))));
             }
             TiFile::Flash(f) if f.data_type == names::types::OS => {
-                pieces.push(Piece::Os(f.clone()))
+                pieces.push((tag(), Piece::Os(f.clone())))
             }
-            TiFile::Flash(f) => pieces.push(Piece::App(f.clone())),
+            TiFile::Flash(f) => pieces.push((tag(), Piece::App(f.clone()))),
             TiFile::Bundle(b) => {
                 if b.checksum_ok == Some(false) {
                     warnings.push(label("bundle checksum doesn't match its contents"));
@@ -498,8 +531,36 @@ pub fn describe(p: &Piece) -> String {
             e.data.len()
         ),
         Piece::App(f) => format!("app {} ({} bytes)", f.name, f.data.len()),
-        Piece::Os(f) => format!("OS {} ({} bytes)", f.name, f.data.len()),
+        Piece::Os(f) => format!(
+            "OS {}.{} ({} bytes)",
+            f.revision_major,
+            f.revision_minor,
+            f.data.len()
+        ),
     }
+}
+
+/// Take the OS out of a list of pieces so it can go first: installing an
+/// OS restarts the calculator and clears RAM, so anything sent before it
+/// could be lost. More than one OS is an error.
+pub fn split_os(pieces: Vec<Piece>) -> Result<(Option<FlashFile>, Vec<Piece>)> {
+    let mut os = None;
+    let mut rest = Vec::new();
+    for p in pieces {
+        match p {
+            Piece::Os(f) if os.is_some() => {
+                return Err(Error::Other(format!(
+                    "more than one OS selected ({} and {}.{})",
+                    describe(&Piece::Os(os.take().unwrap())),
+                    f.revision_major,
+                    f.revision_minor
+                )));
+            }
+            Piece::Os(f) => os = Some(f),
+            p => rest.push(p),
+        }
+    }
+    Ok((os, rest))
 }
 
 /// File name TiLP would choose for a received variable.

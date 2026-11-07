@@ -29,13 +29,13 @@ for now.
 |---|---|
 | send variables (.8xp .8xv .8xl .8xs .8xn .8xm .8ci .8ca .8xg group files …) | ✓ |
 | send apps (.8ek) | ✓ |
-| send bundles (.b84 .b83 .tig) | ✓ (OS files inside are skipped) |
+| send bundles (.b84 .b83 .tig) | ✓ |
 | receive variables and apps | ✓ |
 | list, delete, rename, archive/unarchive | ✓ |
 | screenshot (TUI preview + PNG) | ✓ |
 | remote control (keypresses), run program | ✓ |
 | get/set clock, version info, free memory | ✓ |
-| OS upgrades (.8eu) | not implemented |
+| OS upgrades (.8eu, or the OS in a bundle) | ✓ |
 
 ## Building
 
@@ -70,6 +70,8 @@ simulated calculator instead of hardware.
 | Tab / ← → | switch between computer and calculator pane |
 | Space | mark/unmark (works in both panes) |
 | Enter | open folder / send file (left), receive into current folder (right) |
+| Enter on a bundle | pick which items to send: Space marks, `a` all/none, `A` all but the OS, Enter/`s` sends, `S` sends to the archive |
+| s on a bundle | send the whole bundle |
 | s / S | send marked files / send them to the archive |
 | g | receive marked variables |
 | d, a, r, x | delete, archive⇄RAM, rename, run |
@@ -91,6 +93,8 @@ haccerlink devices                      # find calculators
 haccerlink info                         # model, OS, memory
 haccerlink ls
 haccerlink send game.8xp data.8xv --archive
+haccerlink send --os TI84CEBundle-5.8.3.48.b84   # OS upgrade + TI's apps
+haccerlink send TI84CEBundle-5.8.3.48.b84 --only Python,CabriJr   # just these
 haccerlink get HELLO -o hello.8xp
 haccerlink get --all -o backup/
 haccerlink rm A -t REAL
@@ -110,6 +114,29 @@ haccerlink inspect file.8xp             # show what's in a TI file
 - `--dissect FILE` writes libticalcs' `dusb_dissect()` format: every packet
   decoded, with direction.
 
+### OS upgrades
+
+`haccerlink send --os FILE` installs the OS from an `.8eu` file or from a
+bundle that contains one. Without `--os`, OS files are skipped. In the TUI,
+sending anything that contains an OS asks first, and `s` in that dialog sends
+everything except the OS.
+
+- The OS is sent before anything else. Once it's installed, the calculator
+  checks it, restarts and clears its RAM. haccerlink waits for it to come
+  back on USB (up to a few minutes) and then sends the rest, so RAM
+  variables in the same send aren't lost.
+- The calculator erases its old OS before receiving the new one. If the
+  transfer is interrupted, it stays in the boot code's "waiting for OS"
+  screen until an OS is sent again, which haccerlink can do. It may refuse
+  OS versions it doesn't allow, and haccerlink reports its error code.
+- The packets match libticalcs2's `send_os_834pce` byte for byte. On real
+  hardware it has reinstalled OS 5.6.0.0020 on a CE left without an OS by an
+  interrupted transfer (boot code 5.6.1.0006, which asks for 1004-byte
+  chunks). The reconnect after the restart hasn't been tried on hardware
+  yet.
+- A CE without an OS refuses normal mode (error 0x0009). `send --os` and
+  the TUI carry on anyway, so an OS can be sent to recover it.
+
 ## How it's tested without a calculator
 
 - `src/sim.rs` is a simulated CE that implements the calculator side of DUSB
@@ -119,13 +146,15 @@ haccerlink inspect file.8xp             # show what's in a TI file
   `ticables_cable_send/recv` itself. Exported with `-rdynamic`, those take
   the place of libticables', so unmodified TiLP library code talks to the
   simulator over a pipe while every packet is recorded.
-- `tests/oracle.rs` replays 27 operations through haccerlink and requires
+- `tests/oracle.rs` replays 30 operations through haccerlink and requires
   the same packets in both directions as libticalcs (`tests/golden/*.txt`).
-  For 21 of them it also checks that `--dissect` output matches libticalcs'
+  For 24 of them it also checks that `--dissect` output matches libticalcs'
   `dusb_dissect()`, and for receives that the saved files match libtifiles.
   The cases cover multi-packet transfers, the CE's zero-length-packet quirk,
-  libticalcs' empty final packet, both key code byte orders, and name
-  conversion (`L₁`, `Str1`, …).
+  libticalcs' empty final packet, both key code byte orders, name
+  conversion (`L₁`, `Str1`, accented app names like `Español`, …), and OS
+  transfers (including the empty last OS Data packet libticalcs sends when
+  the OS fills its chunks exactly).
 
 ```sh
 nix develop -c cargo test                      # uses the checked-in goldens
@@ -141,6 +170,15 @@ nix develop .#oracle -c cargo test --test oracle -- --ignored regenerate_goldens
   same kind of problem (libticonv maps `[` to 0xC1 before the tokenizer looks
   for it, so TiLP saves `C1 41 5D` instead of `5C 00`); also fixed here. Both
   divergences are asserted in the tests.
+- OS transfers: libticalcs refuses nothing, while haccerlink refuses an
+  OS file for other hardware and an image without the FF FF FF FF
+  end-of-header marker (libticalcs would read past the end of the buffer
+  looking for it). It also waits longer for the calculator's answers during
+  the transfer. None of this changes the packets.
+- `--dissect` copies a libticalcs dissector bug on purpose so logs diff
+  cleanly: for a virtual packet split over several raw packets, it decodes
+  the command fields from the wrong offset (CE OS Data addresses show up as
+  e.g. `03000000` instead of `00030000`).
 
 ## Trying it on a new calculator or OS version
 

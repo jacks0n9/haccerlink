@@ -1,0 +1,58 @@
+00000004 (01)							| PC>TI: Buffer Size Request
+	[00000400]
+00000004 (02)							| TI>PC: Buffer Size Allocation
+	[000003FF]
+00000010 (04)							| PC>TI: Virtual Packet Data Final
+	0000000A {0001}						| CMD: Ping / Set Mode
+		00 03 00 01 00 00 00 00 07 D0 
+Set mode: { 3, 1, 0, 0, 0x07D0 }
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000000A (04)							| TI>PC: Virtual Packet Data Final
+	00000004 {0012}						| CMD: Acknowledgement of Mode Setting
+		00 00 07 D0 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+00000025 (04)							| PC>TI: Virtual Packet Data Final
+	0000001F {000B}						| CMD: Request to Send
+		00 08 45 73 70 61 C3 B1 6F 6C 00 00 00 01 06 01 
+		00 02 00 02 00 04 F0 0F 00 24 00 03 00 01 01 
+(no extra dissection performed for now)
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+00000007 (04)							| TI>PC: Virtual Packet Data Final
+	00000001 {AA00}						| CMD: Acknowledgement of Data
+		01 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+0000010C (04)							| PC>TI: Virtual Packet Data Final
+	00000106 {000D}						| CMD: Variable Contents
+		81 0F 00 00 01 00 81 47 45 73 70 61 B5 6F 6C 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 5A 
+		5A 5A 5A 5A 5A 5A 
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+00000007 (04)							| TI>PC: Virtual Packet Data Final
+	00000001 {AA00}						| CMD: Acknowledgement of Data
+		01 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+00000006 (04)							| PC>TI: Virtual Packet Data Final
+	00000000 {DD00}						| CMD: End of Transmission
+(no data to dissect)
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
