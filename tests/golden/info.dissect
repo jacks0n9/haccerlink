@@ -1,0 +1,115 @@
+00000004 (01)							| PC>TI: Buffer Size Request
+	[00000400]
+00000004 (02)							| TI>PC: Buffer Size Allocation
+	[000003FF]
+00000010 (04)							| PC>TI: Virtual Packet Data Final
+	0000000A {0001}						| CMD: Ping / Set Mode
+		00 03 00 01 00 00 00 00 07 D0 
+Set mode: { 3, 1, 0, 0, 0x07D0 }
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000000A (04)							| TI>PC: Virtual Packet Data Final
+	00000004 {0012}						| CMD: Acknowledgement of Mode Setting
+		00 00 07 D0 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+00000038 (04)							| PC>TI: Virtual Packet Data Final
+	00000032 {0007}						| CMD: Parameter Request
+		00 18 00 0A 00 08 00 02 00 03 00 04 00 06 00 07 
+		00 49 00 09 00 48 00 0B 00 0C 00 0D 00 0E 00 0F 
+		00 10 00 11 00 1E 00 1F 00 1D 00 1B 00 2D 00 4B 
+		00 23 
+Requested 24 (18) parameter IDs:
+	000A (OS mode)
+	0008 (Device type)
+	0002 (Product name)
+	0003 (Main part ID)
+	0004 (Hardware version)
+	0006 (Language ID)
+	0007 (Sub-language ID)
+	0049 (Boot build number)
+	0009 (Boot version)
+	0048 (OS build number)
+	000B (OS version)
+	000C (Physical RAM)
+	000D (User RAM)
+	000E (Free RAM)
+	000F (Physical Flash)
+	0010 (User Flash)
+	0011 (Free Flash)
+	001E (LCD width)
+	001F (LCD height)
+	001D (Bits per pixel)
+	001B (Color is available)
+	002D (Battery level)
+	004B (Exact math engine)
+	0023 (Classic clock supported)
+
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+000000DC (04)							| TI>PC: Virtual Packet Data Final
+	000000D6 {0008}						| CMD: Parameter Data
+		00 18 00 0A 00 00 01 01 00 08 00 00 02 00 73 00 
+		02 00 00 0E 54 49 2D 38 34 20 50 6C 75 73 20 43 
+		45 00 00 03 00 00 05 13 1E AC C0 DE 00 04 00 00 
+		02 00 07 00 06 00 00 01 09 00 07 00 00 01 01 00 
+		49 00 00 02 00 11 00 09 00 00 04 00 05 03 06 00 
+		48 00 00 02 00 14 00 0B 00 00 04 00 05 08 02 00 
+		0C 00 00 08 00 00 00 00 00 04 00 00 00 0D 00 00 
+		08 00 00 00 00 00 02 59 90 00 0E 00 00 08 00 00 
+		00 00 00 02 59 30 00 0F 00 00 08 00 00 00 00 00 
+		40 00 00 00 10 00 00 08 00 00 00 00 00 2E 00 00 
+		00 11 00 00 08 00 00 00 00 00 2D FF A8 00 1E 00 
+		00 02 01 40 00 1F 00 00 02 00 F0 00 1D 00 00 01 
+		10 00 1B 00 00 01 01 00 2D 00 00 01 04 00 4B 00 
+		00 01 00 00 23 01 
+Received 24 (18) parameter values:
+	000A (OS mode): OK, size 0001
+		01 
+	0008 (Device type): OK, size 0002
+		00 73 
+	0002 (Product name): OK, size 000E
+		54 49 2D 38 34 20 50 6C 75 73 20 43 45 00 
+	0003 (Main part ID): OK, size 0005
+		13 1E AC C0 DE 
+	0004 (Hardware version): OK, size 0002
+		00 07 
+	0006 (Language ID): OK, size 0001
+		09 
+	0007 (Sub-language ID): OK, size 0001
+		01 
+	0049 (Boot build number): OK, size 0002
+		00 11 
+	0009 (Boot version): OK, size 0004
+		00 05 03 06 
+	0048 (OS build number): OK, size 0002
+		00 14 
+	000B (OS version): OK, size 0004
+		00 05 08 02 
+	000C (Physical RAM): OK, size 0008
+		00 00 00 00 00 04 00 00 
+	000D (User RAM): OK, size 0008
+		00 00 00 00 00 02 59 90 
+	000E (Free RAM): OK, size 0008
+		00 00 00 00 00 02 59 30 
+	000F (Physical Flash): OK, size 0008
+		00 00 00 00 00 40 00 00 
+	0010 (User Flash): OK, size 0008
+		00 00 00 00 00 2E 00 00 
+	0011 (Free Flash): OK, size 0008
+		00 00 00 00 00 2D FF A8 
+	001E (LCD width): OK, size 0002
+		01 40 
+	001F (LCD height): OK, size 0002
+		00 F0 
+	001D (Bits per pixel): OK, size 0001
+		10 
+	001B (Color is available): OK, size 0001
+		01 
+	002D (Battery level): OK, size 0001
+		04 
+	004B (Exact math engine): OK, size 0001
+		00 
+	0023 (Classic clock supported): NOK !
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]

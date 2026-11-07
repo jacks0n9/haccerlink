@@ -1,0 +1,67 @@
+00000004 (01)							| PC>TI: Buffer Size Request
+	[00000400]
+00000004 (02)							| TI>PC: Buffer Size Allocation
+	[000003FF]
+00000010 (04)							| PC>TI: Virtual Packet Data Final
+	0000000A {0001}						| CMD: Ping / Set Mode
+		00 03 00 01 00 00 00 00 07 D0 
+Set mode: { 3, 1, 0, 0, 0x07D0 }
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000000A (04)							| TI>PC: Virtual Packet Data Final
+	00000004 {0012}						| CMD: Acknowledgement of Mode Setting
+		00 00 07 D0 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+00000020 (04)							| PC>TI: Virtual Packet Data Final
+	0000001A {0007}						| CMD: Parameter Request
+		00 0C 00 23 00 3A 00 24 00 25 00 27 00 28 00 3B 
+		00 3C 00 3D 00 3E 00 3F 00 40 
+Requested 12 (C) parameter IDs:
+	0023 (Classic clock supported)
+	003A (New clock supported)
+	0024 (Clock ON)
+	0025 (Clock sec since 1997)
+	0027 (Clock date format)
+	0028 (Clock time format)
+	003B (Clock seconds)
+	003C (Clock minutes)
+	003D (Clock hours)
+	003E (Clock day)
+	003F (Clock month)
+	0040 (Clock year)
+
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000004B (04)							| TI>PC: Virtual Packet Data Final
+	00000045 {0008}						| CMD: Parameter Data
+		00 0C 00 23 01 00 3A 00 00 01 01 00 24 00 00 01 
+		01 00 25 01 00 27 00 00 01 01 00 28 00 00 01 80 
+		00 3B 00 00 01 00 00 3C 00 00 01 1E 00 3D 00 00 
+		01 0C 00 3E 00 00 01 06 00 3F 00 00 01 0B 00 40 
+		00 00 02 07 EA 
+Received 12 (C) parameter values:
+	0023 (Classic clock supported): NOK !
+	003A (New clock supported): OK, size 0001
+		01 
+	0024 (Clock ON): OK, size 0001
+		01 
+	0025 (Clock sec since 1997): NOK !
+	0027 (Clock date format): OK, size 0001
+		01 
+	0028 (Clock time format): OK, size 0001
+		80 
+	003B (Clock seconds): OK, size 0001
+		00 
+	003C (Clock minutes): OK, size 0001
+		1E 
+	003D (Clock hours): OK, size 0001
+		0C 
+	003E (Clock day): OK, size 0001
+		06 
+	003F (Clock month): OK, size 0001
+		0B 
+	0040 (Clock year): OK, size 0002
+		07 EA 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]

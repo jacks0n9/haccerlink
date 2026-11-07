@@ -1,0 +1,25 @@
+[package]
+name = "haccerlink"
+version = "0.1.0"
+edition = "2024"
+description = "TUI and CLI link program for the TI-84 Plus CE (DUSB over USB, no libusb)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/jacks0n9/haccerlink"
+readme = "README.md"
+keywords = ["ti-84", "calculator", "dusb", "usb", "tui"]
+categories = ["command-line-utilities", "hardware-support"]
+exclude = ["/oracle/build", "/.github"]
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+nusb = "0.2"
+png = "0.18.1"
+ratatui = "0.30.2"
+thiserror = "2.0.21"
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+flate2 = "1.1.11"
+tempfile = "3.27.0"

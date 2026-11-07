@@ -1,0 +1,36 @@
+00000004 (01)							| PC>TI: Buffer Size Request
+	[00000400]
+00000004 (02)							| TI>PC: Buffer Size Allocation
+	[000003FF]
+00000010 (04)							| PC>TI: Virtual Packet Data Final
+	0000000A {0001}						| CMD: Ping / Set Mode
+		00 03 00 01 00 00 00 00 07 D0 
+Set mode: { 3, 1, 0, 0, 0x07D0 }
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000000A (04)							| TI>PC: Virtual Packet Data Final
+	00000004 {0012}						| CMD: Acknowledgement of Mode Setting
+		00 00 07 D0 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+00000024 (04)							| PC>TI: Virtual Packet Data Final
+	0000001E {000C}						| CMD: Request Variable
+		00 04 44 45 4D 4F 00 01 FF FF FF FF 00 02 00 03 
+		00 08 00 01 00 11 00 04 F0 0F 00 24 00 00 
+(no extra dissection performed for now)
+00000002 (05)							| TI>PC: Virtual Packet Data Acknowledgement
+	[E000]
+0000001E (04)							| TI>PC: Virtual Packet Data Final
+	00000018 {000A}						| CMD: Variable Header
+		00 04 44 45 4D 4F 00 00 02 00 03 00 00 01 01 00 
+		08 00 00 04 00 00 00 00 
+(no extra dissection performed for now)
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
+0000002C (04)							| TI>PC: Virtual Packet Data Final
+	00000026 {000D}						| CMD: Variable Contents
+		81 0F 00 00 00 20 81 44 44 45 4D 4F FF FF FF FF 
+		FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+		FF FF FF FF FF FF 
+00000002 (05)							| PC>TI: Virtual Packet Data Acknowledgement
+	[E000]
