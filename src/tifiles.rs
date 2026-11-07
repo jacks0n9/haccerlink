@@ -202,6 +202,17 @@ pub fn cert_field_find(mut d: &[u8], id: u16) -> Option<&[u8]> {
     None
 }
 
+/// The name field in an app's own header (`get_native_app_name`), as raw
+/// TI-charset bytes: at most 8, up to the first NUL.
+fn native_app_name(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 6 || data[0] & 0xF0 != 0x80 || data[1] != 0x0F {
+        return None;
+    }
+    let app_type = (data[0] as u16) << 8;
+    let n = cert_field_find(&data[6..], app_type + 0x40)?;
+    Some(n.iter().copied().take(8).take_while(|&b| b != 0).collect())
+}
+
 impl FlashFile {
     pub fn parse(d: &[u8]) -> Result<Self> {
         if d.len() < 78 || &d[..8] != FLASH_SIGNATURE {
@@ -210,10 +221,10 @@ impl FlashFile {
             ));
         }
         let name_len = (d[16] as usize).min(8);
-        let header_name: String = d[17..17 + name_len]
+        let header_name: Vec<u8> = d[17..17 + name_len]
             .iter()
-            .take_while(|&&b| b != 0)
-            .map(|&b| b as char)
+            .copied()
+            .take_while(|&b| b != 0)
             .collect();
         let device_type = d[48];
         let data_type = d[49];
@@ -239,21 +250,14 @@ impl FlashFile {
                 "app data does not start with 0x81".into(),
             ));
         }
-        // Like libtifiles, prefer the name from the app's own header.
-        let name = if data_type == names::types::APP && data.len() >= 6 && data[1] == 0x0F {
-            let app_type = (data[0] as u16) << 8;
-            cert_field_find(&data[6..], app_type + 0x40)
-                .map(|n| {
-                    n.iter()
-                        .take(8)
-                        .take_while(|&&b| b != 0)
-                        .map(|&b| b as char)
-                        .collect()
-                })
-                .unwrap_or(header_name)
-        } else {
-            header_name
+        // Like libtifiles, prefer the name from the app's own header, then
+        // convert it to TI-UTF-8 the way libticonv does for the CE (so e.g.
+        // "Espa\xB5ol" is "Español", which is also what goes on the wire).
+        let raw_name = match data_type {
+            names::types::APP => native_app_name(&data).unwrap_or(header_name),
+            _ => header_name,
         };
+        let name = names::raw_to_wire(&raw_name, data_type);
         Ok(Self {
             revision_major: d[8],
             revision_minor: d[9],
@@ -300,10 +304,16 @@ impl FlashFile {
             self.revision_month,
         ]);
         out.extend_from_slice(&self.revision_year.to_le_bytes());
+        // ti8x_file_write_flash: the name back in the TI charset, or for
+        // apps the name from the app's own header when it has one.
+        let raw = match self.data_type {
+            names::types::APP => native_app_name(&self.data),
+            _ => None,
+        }
+        .unwrap_or_else(|| names::wire_to_raw(&self.name, self.data_type));
         let mut name = [0u8; 8];
-        let nb = self.name.as_bytes();
-        let n = nb.len().min(8);
-        name[..n].copy_from_slice(&nb[..n]);
+        let n = raw.len().min(8);
+        name[..n].copy_from_slice(&raw[..n]);
         out.push(n as u8);
         out.extend_from_slice(&name);
         out.extend_from_slice(&[0u8; 23]);
@@ -507,6 +517,24 @@ pub fn file_name_for(wire_name: &str, type_id: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_names_use_the_ti_charset() {
+        // TI's Español app: header and internal name are "Espa" B5 "ol".
+        let mut app = vec![0x81, 0x0F, 0x00, 0x00, 0x00, 0x20, 0x81, 0x47];
+        app.extend_from_slice(b"Espa\xB5ol");
+        app.resize(0x26, 0xFF);
+        let mut f = FlashFile::from_received("x", names::types::APP, app);
+        let bytes = f.to_bytes();
+        assert_eq!(&bytes[16..25], b"\x07Espa\xB5ol\0");
+        f = FlashFile::parse(&bytes).unwrap();
+        assert_eq!(f.name, "Español");
+        // Written back as the same raw bytes.
+        assert_eq!(f.to_bytes(), bytes);
+        // Without an internal name, the TI-UTF-8 name is converted back.
+        let os = FlashFile::from_received("Français", names::types::OS, vec![0x80, 0x0F]);
+        assert_eq!(&os.to_bytes()[16..25], b"\x08Fran\xB3ais");
+    }
 
     fn prog() -> VarEntry {
         VarEntry {
