@@ -109,7 +109,18 @@ impl Dissector {
                         f.push_str("\t\t");
                         hex_wrapped(&mut f, payload, "\n\t\t");
                         f.push('\n');
-                        if !dissect_cmd_data(&mut f, payload, vtl_type) {
+                        // libticalcs then does `data -= vtl_size` after
+                        // advancing by `len`, so when the virtual packet
+                        // continues in later raw packets it decodes from
+                        // `len - vtl_size` bytes before the payload (for CE
+                        // OS Data that garbles the address). Copied so logs
+                        // diff cleanly; bytes before the packet read as 0.
+                        let start = 11 + len as isize - vtl_size as isize;
+                        let shifted: Vec<u8> = (start..start + len as isize)
+                            .map(|i| usize::try_from(i).ok().and_then(|i| data.get(i)))
+                            .map(|b| b.copied().unwrap_or(0))
+                            .collect();
+                        if !dissect_cmd_data(&mut f, &shifted, vtl_type) {
                             f.push_str("(inner data dissection had a problem with the packet)\n");
                         }
                     }
